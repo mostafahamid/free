@@ -1085,8 +1085,9 @@
         </div>
     </div>
 
-    <!-- QR Code Library -->
+    <!-- QR Code Library - Inline for reliability -->
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
     <script>
     // ============================================================
@@ -1994,6 +1995,9 @@
             return;
         }
 
+        // Reset rendered configs index
+        renderedConfigs = [];
+
         // Group by source
         const bySource = {};
         configs.forEach(c => {
@@ -2037,9 +2041,25 @@
         container.innerHTML = html;
     }
 
+    // Store configs for safe reference by index
+    let renderedConfigs = [];
+
     function renderConfigCard(config, idx) {
         const displayName = config.name || `${config.protocol.toUpperCase()} #${idx + 1}`;
         const truncatedName = displayName.length > 60 ? displayName.substring(0, 60) + '...' : displayName;
+
+        // Store config by global index for safe onclick access
+        const globalIdx = renderedConfigs.length;
+        renderedConfigs.push(config);
+
+        let pingHtml = '';
+        if (config.quality.pingStatus === 'alive') {
+            pingHtml = '<span style="font-size:0.68em;color:var(--accent-green);">🟢 ' + config.quality.pingMs + 'ms</span>';
+        } else if (config.quality.pingStatus === 'dead') {
+            pingHtml = '<span style="font-size:0.68em;color:var(--accent-red);">🔴 آفلاین</span>';
+        } else {
+            pingHtml = '<span style="font-size:0.68em;color:var(--text-muted);">⏳ تست نشده</span>';
+        }
 
         return `
             <div class="config-card">
@@ -2062,18 +2082,13 @@
                         <div class="quality-bar" style="width: ${config.quality.score}%"></div>
                     </div>
                     <span class="quality-label">${config.quality.label} (${config.quality.score}%)</span>
-                    ${config.quality.pingStatus === 'alive' 
-                        ? `<span style="font-size:0.68em;color:var(--accent-green);">🟢 ${config.quality.pingMs}ms</span>` 
-                        : config.quality.pingStatus === 'dead' 
-                            ? `<span style="font-size:0.68em;color:var(--accent-red);">🔴 آفلاین</span>`
-                            : `<span style="font-size:0.68em;color:var(--text-muted);">⏳ تست نشده</span>`
-                    }
+                    ${pingHtml}
                 </div>
                 <div class="config-actions">
-                    <button class="copy-btn" onclick="copyConfig(this, \`${escapeForAttr(config.raw)}\`)">
+                    <button class="copy-btn" onclick="copyByIndex(this, ${globalIdx})">
                         📋 کپی
                     </button>
-                    <button class="qr-btn" onclick="showQR(\`${escapeForAttr(config.raw)}\`)">
+                    <button class="qr-btn" onclick="showQRByIndex(${globalIdx})">
                         📱 QR
                     </button>
                 </div>
@@ -2090,33 +2105,45 @@
     }
 
     // ============================================================
-    // Copy
+    // Copy & QR by Index (safe - no special char issues)
     // ============================================================
-    function copyConfig(btn, text) {
+    function copyByIndex(btn, idx) {
+        const text = renderedConfigs[idx]?.raw || '';
+        copyToClipboard(text, btn);
+    }
+
+    function showQRByIndex(idx) {
+        const text = renderedConfigs[idx]?.raw || '';
+        if (text) showQR(text);
+    }
+
+    function copyToClipboard(text, btn) {
+        if (!text) return;
         navigator.clipboard.writeText(text).then(() => {
-            btn.classList.add('copied');
-            btn.innerHTML = '✅ کپی شد';
-            showToast('کانفیگ با موفقیت کپی شد!');
-            setTimeout(() => {
-                btn.classList.remove('copied');
-                btn.innerHTML = '📋 کپی';
-            }, 2000);
+            onCopySuccess(btn);
         }).catch(() => {
             // Fallback
             const ta = document.createElement('textarea');
             ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
             document.body.appendChild(ta);
             ta.select();
-            document.execCommand('copy');
+            try { document.execCommand('copy'); } catch {}
             document.body.removeChild(ta);
-            btn.classList.add('copied');
-            btn.innerHTML = '✅ کپی شد';
-            showToast('کانفیگ با موفقیت کپی شد!');
-            setTimeout(() => {
-                btn.classList.remove('copied');
-                btn.innerHTML = '📋 کپی';
-            }, 2000);
+            onCopySuccess(btn);
         });
+    }
+
+    function onCopySuccess(btn) {
+        if (!btn) return;
+        btn.classList.add('copied');
+        btn.innerHTML = '✅ کپی شد';
+        showToast('کانفیگ با موفقیت کپی شد!');
+        setTimeout(() => {
+            btn.classList.remove('copied');
+            btn.innerHTML = '📋 کپی';
+        }, 2000);
     }
 
     function copyAllFiltered() {
@@ -2156,7 +2183,7 @@
     }
 
     // ============================================================
-    // QR Code
+    // QR Code (supports both qrcode.js libraries)
     // ============================================================
     function showQR(text) {
         const modal = document.getElementById('qrModal');
@@ -2164,17 +2191,90 @@
         modal.classList.add('show');
         container.innerHTML = '';
 
-        if (typeof QRCode !== 'undefined') {
-            const canvas = document.createElement('canvas');
-            container.appendChild(canvas);
-            QRCode.toCanvas(canvas, text, {
-                width: 220,
-                margin: 2,
-                color: { dark: '#000000', light: '#ffffff' }
-            });
-        } else {
-            container.innerHTML = '<p style="color: #333; font-size: 0.85em;">QR Code library not loaded. Copy the config instead.</p>';
+        let generated = false;
+
+        // Method 1: qrcode npm package (QRCode.toCanvas)
+        if (typeof QRCode !== 'undefined' && typeof QRCode.toCanvas === 'function') {
+            try {
+                const canvas = document.createElement('canvas');
+                container.appendChild(canvas);
+                QRCode.toCanvas(canvas, text, {
+                    width: 220,
+                    margin: 2,
+                    color: { dark: '#000000', light: '#ffffff' }
+                }, function(error) {
+                    if (error) {
+                        console.error('QR Error:', error);
+                        container.innerHTML = '';
+                        fallbackQR(container, text);
+                    }
+                });
+                generated = true;
+            } catch(e) {
+                console.error('QR Method 1 failed:', e);
+                container.innerHTML = '';
+            }
         }
+
+        // Method 2: qrcodejs library (new QRCode(element, text))
+        if (!generated && typeof QRCode !== 'undefined' && typeof QRCode.toCanvas !== 'function') {
+            try {
+                const div = document.createElement('div');
+                container.appendChild(div);
+                new QRCode(div, {
+                    text: text,
+                    width: 220,
+                    height: 220,
+                    colorDark: '#000000',
+                    colorLight: '#ffffff',
+                    correctLevel: QRCode.CorrectLevel ? QRCode.CorrectLevel.L : 1
+                });
+                generated = true;
+            } catch(e) {
+                console.error('QR Method 2 failed:', e);
+                container.innerHTML = '';
+            }
+        }
+
+        // Method 3: API Fallback (always works)
+        if (!generated) {
+            fallbackQR(container, text);
+        }
+    }
+
+    function fallbackQR(container, text) {
+        // Use free QR code API as last resort
+        const encodedText = encodeURIComponent(text);
+        
+        // Try multiple QR APIs
+        const apis = [
+            `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodedText}`,
+            `https://chart.googleapis.com/chart?cht=qr&chs=220x220&chl=${encodedText}`,
+            `https://quickchart.io/qr?text=${encodedText}&size=220`
+        ];
+
+        const img = document.createElement('img');
+        img.style.width = '220px';
+        img.style.height = '220px';
+        img.style.borderRadius = '8px';
+        img.alt = 'QR Code';
+        
+        let apiIndex = 0;
+        img.onerror = function() {
+            apiIndex++;
+            if (apiIndex < apis.length) {
+                img.src = apis[apiIndex];
+            } else {
+                container.innerHTML = `
+                    <div style="padding:20px;text-align:center;">
+                        <p style="color:#666;font-size:0.85em;margin-bottom:10px;">QR Code در دسترس نیست</p>
+                        <p style="color:#999;font-size:0.75em;">لینک رو کپی کنید و در اپ اسکن کنید</p>
+                    </div>
+                `;
+            }
+        };
+        img.src = apis[0];
+        container.appendChild(img);
     }
 
     function closeQR() {
@@ -2246,5 +2346,5 @@
         fetchAllConfigs();
     });
     </script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a07ac80008d0a285',t:'MTc4MDc4NDE4NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a07ada924be323df',t:'MTc4MDc4NDk0NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
